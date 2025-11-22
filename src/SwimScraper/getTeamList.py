@@ -2,145 +2,133 @@ import requests
 import csv
 from bs4 import BeautifulSoup as bs
 import pandas as pd
-import json
 import time
+from pathlib import Path
+from typing import Union
 
-TEAM_PAGE_RANGE = 32
+TEAM_PAGE_RANGE = 32  # number of pages under /team/?page=
 
-states = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", 
-          "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", 
-          "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", 
-          "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", 
-          "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"]
+states = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+]
 
-team_list = list()
+team_list = []
 
-#function that scrapes the swimcloud.com team list to get all college swimming teams - gets each team's name, ID, state, division, conference
+
 def getTeamList():
-	for page in range(1, TEAM_PAGE_RANGE): #this is set to the number of pages on swimcloud.com/team
-		team_list_url = 'https://www.swimcloud.com/team/?page=' + str(page)
-		
-		url = requests.get(team_list_url, headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36', 'Referer' : 'https://google.com/'})
+    """
+    Scrape SwimCloud's /team/ pages to get all college teams.
 
-		url.encoding = 'utf-8'
+    This is an HTML-only "surface" scraper used to build collegeSwimmingTeams.csv.
+    """
+    global team_list
+    team_list = []
 
-		soup = bs(url.text, 'html.parser')
+    for page in range(1, TEAM_PAGE_RANGE):
+        team_list_url = f"https://www.swimcloud.com/team/?page={page}"
+        resp = requests.get(
+            team_list_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        resp.encoding = "utf-8"
+        soup = bs(resp.content, "html.parser")
 
-		teams = soup.find_all('div', attrs = {'class' : 'top-box'}) #each top-box corresponds to a single team
+        teams_html = soup.find_all("tr")[1:]  # first row is header
 
-		for team in teams:
-			team_info = team.find_all('a', attrs = {'class' : 'top-box-title'})[0] #contains the team's id # and the team's name
+        for row in teams_html:
+            infoList = row.find_all("td")
+            if len(infoList) < 4:
+                continue
 
-			team_ID = team_info['href'].split('/')[-1] 
-			team_name = team_info.text.splitlines()[3]
-			team_state = team.find('div', attrs = {'class' : 'top-box-points'}).text.strip()
+            team_name = infoList[0].find("a").text.strip()
+            team_ID = infoList[0].find("a")["href"].split("/")[-2]
 
-			if(team_state in states): #currently only for colleges in the US - the teams from Canada do not have an about page
+            team_state = infoList[1].text.strip()
+            if team_state not in states:
+                team_state = "NA"
 
-				team_url = 'https://www.swimcloud.com/team/' + team_ID + '/about/' #page that has division and conference information
+            team_division = "NONE"
+            team_division_ID = "NONE"
+            team_conference = "NONE"
+            team_conference_ID = "NONE"
 
-				url = requests.get(team_url, headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36', 'Referer' : 'https://google.com/'})
+            if infoList[2].find("a") is not None:
+                div_link = infoList[2].find("a")
+                team_division = div_link["title"].strip()
+                team_division_ID = div_link["href"].split("/")[-2]
 
-				time.sleep(10) #10 second delay between requests
+            if infoList[3].find("a") is not None:
+                conf_link = infoList[3].find("a")
+                team_conference = conf_link["title"].strip()
+                team_conference_ID = conf_link["href"].split("/")[-2]
 
-				url.encoding = 'utf-8'
+            team_list.append(
+                {
+                    "team_name": team_name,
+                    "team_ID": team_ID,
+                    "team_state": team_state,
+                    "team_division": team_division,
+                    "team_division_ID": team_division_ID,
+                    "team_conference": team_conference,
+                    "team_conference_ID": team_conference_ID,
+                }
+            )
 
-				soup = bs(url.text , 'html.parser')
-
-				#catches Attribute error when ul is not found - cant call find_all on a NoneType Object
-				try:
-					infoList = soup.find('ul', attrs = {'class' : 'o-list-inline--dotted'}).find_all('li')[:3]   #each li in infoList will hold either a division name or conference name 
-				except: 
-					infoList = []  #if no ul is found then set infoList to empty
-
-
-				if(len(infoList) > 1 and 'division' in infoList[0].find('a')['href'] and 'division' in infoList[1].find('a')['href']): #some teams have two divisions listed 
-					twoDivisionsListed = True
-				else:
-					twoDivisionsListed = False
-
-
-				if(len(infoList) > 0): 
-					if(infoList[0].find('a').get('title')):  #if the team has a division listed 
-						isDivision = True
-					else:
-						isDivision = False
-				else:
-					isDivision = False
-
-				if(len(infoList) > 1 and not twoDivisionsListed): #only one division listed so we only need to set conference
-					if(infoList[1].find('a').get('title')):  #if the team has a conference listed 
-						isConference = True
-					else:
-						isConference = False
-				elif(len(infoList) > 2 and twoDivisionsListed): #if there are two divisions listed we set the second division and then the conference
-					if(infoList[1].find('a').get('title')):  #if a second division is listed
-						isDivisonOther = True
-					else:
-						isDivisonOther = False
-					if(infoList[2].find('a').get('title')):
-						isConference = True
-					else:
-						isConference = False
-				else:
-					isConference = False
-
-				if(isDivision):
-					team_division = infoList[0].find('a')['title'].strip()
-					team_division_ID = infoList[0].find('a')['href'].split('/')[-2]    #sets division and division_ID
-				else:
-					team_division = 'NONE'
-					team_division_ID = 'NONE'
-
-				if(twoDivisionsListed):
-					if(isDivisonOther):
-						team_division_other = infoList[1].find('a')['title'].strip()
-						team_division_other_ID = infoList[1].find('a')['href'].split('/')[-2]    #sets second division and second division's ID
-					else:
-						team_division_other = 'NONE'
-						team_division_other_ID = 'NONE'
-					if(isConference):
-						team_conference = infoList[2].find('a')['title'].strip()
-						team_conference_ID = infoList[2].find('a')['href'].split('/')[-2]   #sets conference and conference ID
-					else:
-						team_conference = 'NONE'
-						team_conference_ID = 'NONE'
-				else: #only one division is listed so we only need to set conference
-					if(isConference):
-						team_conference = infoList[1].find('a')['title'].strip()
-						team_conference_ID = infoList[1].find('a')['href'].split('/')[-2]
-					else:
-						team_conference = 'NONE'
-						team_conference_ID = 'NONE'
-
-					team_division_other = 'NONE'
-					team_division_other_ID = 'NONE'
-
-				team_list.append({'team_ID' : team_ID, 'team_name' : team_name, 'team_state' : team_state, 'team_division' : team_division, 'team_division_ID' : team_division_ID, 'team_division_other' : team_division_other, 'team_division_other_ID' : team_division_other_ID, 'team_conference' : team_conference, 'team_conference_ID' : team_conference_ID})
-
-			else: #team is not in the US so set division and conference data to INTERNATIONAL
-				team_list.append({'team_ID' : team_ID, 'team_name' : team_name, 'team_state' : team_state, 'team_division' : 'INTERNATIONAL', 'team_division_ID' : 'INTERNATIONAL', 'team_division_other' : 'INTERNATIONAL', 'team_division_other_ID' : 'INTERNATIONAL', 'team_conference' : 'INTERNATIONAL', 'team_conference_ID' : 'INTERNATIONAL'})
+        # be semi-polite to the server
+        time.sleep(0.05)
 
 
+def teamListToCSV(filename="collegeSwimmingTeams.csv"):
+    """Write the global team_list to a CSV."""
+    with open(filename, "w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(
+            [
+                "team_name",
+                "team_ID",
+                "team_state",
+                "team_division",
+                "team_division_ID",
+                "team_conference",
+                "team_conference_ID",
+            ]
+        )
 
-def teamListToCSV():
-	file_name = 'collegeSwimmingTeams.csv'
-
-	file = open(file_name,'w', newline = '', encoding ='utf-8')  
-	
-	writer = csv.writer(file)
-
-	#writer.writerow(['team_name','team_ID','team_state','team_division','team_division_ID','team_division_other','team_division_other_ID','team_conference','team_conference_ID'])
-	writer.writerow(['team_name','team_ID','team_state','team_division','team_division_ID','team_conference','team_conference_ID'])
-
-
-	for i in range(len(team_list)):
-		#writer.writerow([team_list[i]['team_name'], team_list[i]['team_ID'], team_list[i]['team_state'], team_list[i]['team_division'], team_list[i]['team_division_ID'], team_list[i]['team_division_other'], team_list[i]['team_division_other_ID'], team_list[i]['team_conference'], team_list[i]['team_conference_ID']])
-		writer.writerow([team_list[i]['team_name'], team_list[i]['team_ID'], team_list[i]['team_state'], team_list[i]['team_division'], team_list[i]['team_division_ID'], team_list[i]['team_conference'], team_list[i]['team_conference_ID']])
-	file.close()
+        for team in team_list:
+            writer.writerow(
+                [
+                    team["team_name"],
+                    team["team_ID"],
+                    team["team_state"],
+                    team["team_division"],
+                    team["team_division_ID"],
+                    team["team_conference"],
+                    team["team_conference_ID"],
+                ]
+            )
 
 
+def build_team_dataframe():
+    """Scrape SwimCloud for all college teams and return a pandas DataFrame."""
+    getTeamList()
+    return pd.DataFrame(team_list)
 
-#MAIN FUNCTION -----------------------
-getTeamList()
-teamListToCSV()
+
+def regenerate_teams_csv(path: Union[str, Path] = "collegeSwimmingTeams.csv") -> None:
+    """
+    Scrape SwimCloud and write the college teams table to a CSV.
+
+    The resulting CSV can be loaded by SwimScraper.py via load_teams().
+    """
+    df = build_team_dataframe()
+    path = Path(path)
+    df.to_csv(path, index=False, encoding="utf-8")
+    print(f"[getTeamList] Wrote {len(df)} teams to {path}")
+
+
+if __name__ == "__main__":
+    regenerate_teams_csv()

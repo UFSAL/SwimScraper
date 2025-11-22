@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# CSV outputs from dumps
+*.csv
+
+# But keep these "source" CSVs under version control
+!swimscraper/src/swimscraper/collegeSwimmingTeams.csv
+!swimscraper/src/swimscraper/teams_config.csv
+
+
+# Ignore all dump output folders if any
+outputs/
+data/
