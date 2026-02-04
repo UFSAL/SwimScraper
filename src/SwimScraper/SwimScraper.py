@@ -1,8 +1,43 @@
-import requests
+"""
+SwimScraper.py
+
+A toolbox-style module for pulling SwimCloud data.
+
+This file supports two complementary approaches:
+
+1) Pure HTML scraping (robust when SwimCloud's JSON endpoints are inconsistent)
+   - get_swimmer_rankings_scores() scrapes /swimmer/<id>/rankings/ and returns
+     per-season “score” (FINA-like points) cards + the rank items.
+
+2) JSON endpoints (fast when they work)
+   - profile_fastest_times / times_by_event helpers
+   - convenience functions that flatten JSON into DataFrames
+
+NOTE:
+- Do NOT save/commit/share HTML that contains:
+    <script id="auth-info" type="application/json"> ... </script>
+  It can include your email and account details.
+- Cookies are OPTIONAL for most pages, but can help reduce 403/429.
+  Use env vars (recommended):
+    SWIMCLOUD_SESSIONID
+    SWIMCLOUD_CSRFTOKEN
+"""
+
+from __future__ import annotations
+
+import os
+import re
 import csv
-from bs4 import BeautifulSoup as bs
-import pandas as pd
 import time as _time
+import random
+from pathlib import Path
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup as bs
 
 # Selenium is only used by a few legacy functions.
 from selenium import webdriver
@@ -16,13 +51,53 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
 )
 
-from pathlib import Path
-from datetime import datetime
+SWIMCLOUD_BASE = "https://www.swimcloud.com"
 SWIMCLOUD_SWIMMER_API = "https://www.swimcloud.com/api/swimmers"
 
-# ---------------------------------------------------------------------------
+
+# =============================================================================
+# SESSION / REQUESTS HELPERS
+# =============================================================================
+
+def build_swimcloud_session_from_env() -> requests.Session:
+    """
+    Build a requests.Session with browser-like headers and (optionally)
+    attach SwimCloud cookies from environment variables.
+
+    Env vars (optional):
+      - SWIMCLOUD_SESSIONID
+      - SWIMCLOUD_CSRFTOKEN
+    """
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    sessionid = os.getenv("SWIMCLOUD_SESSIONID")
+    csrftoken = os.getenv("SWIMCLOUD_CSRFTOKEN")
+
+    if sessionid:
+        s.cookies.set("sessionid", sessionid, domain="www.swimcloud.com", path="/")
+    if csrftoken:
+        s.cookies.set("csrftoken", csrftoken, domain="www.swimcloud.com", path="/")
+
+    return s
+
+
+def _sleep_jitter(min_s: float = 0.6, max_s: float = 1.4) -> None:
+    _time.sleep(random.uniform(min_s, max_s))
+
+
+# =============================================================================
 # JSON-BASED HELPERS (NEW STYLE)
-# ---------------------------------------------------------------------------
+# =============================================================================
+
 STROKE_CODES = {
     "1": "Free",
     "2": "Back",
@@ -31,17 +106,19 @@ STROKE_CODES = {
     "5": "IM",
 }
 
+
 def _gender_code(eventgender: str) -> int:
     """Map SwimCloud eventgender ('M'/'F') to numeric code used in event token."""
     if eventgender == "M":
         return 1
     if eventgender == "F":
         return 2
-    # fallback, just in case
     return 0
+
 
 def _stroke_name(code) -> str:
     return STROKE_CODES.get(str(code), str(code))
+
 
 def _event_label_from_record(rec: dict) -> str:
     """e.g. '50 Y Free'."""
@@ -49,6 +126,7 @@ def _event_label_from_record(rec: dict) -> str:
     course = rec.get("eventcourse")
     stroke = _stroke_name(rec.get("eventstroke"))
     return f"{dist} {course} {stroke}"
+
 
 def _event_token_from_record(rec: dict) -> str:
     """
@@ -63,16 +141,13 @@ def _event_token_from_record(rec: dict) -> str:
     stroke_code = rec.get("eventstroke")
     return f"{gender_code}|{distance}|{course}|{stroke_code}"
 
+
 def getTeamPerformance(team_id, gender="M", event_course="Y", rank_type="D", limit=200):
     """
     Fetch performance rankings for a team from SwimCloud's JSON API.
 
-    This uses:
-        https://www.swimcloud.com/api/performances/get_for_team/
-
-    Returns a list of dicts with fields like:
-        id, score, gender, agegroup, team_id, season_id, rank_type,
-        event_course, place, updated_at, created_at, ...
+    Uses:
+      https://www.swimcloud.com/api/performances/get_for_team/
     """
     url = "https://www.swimcloud.com/api/performances/get_for_team/"
     params = {
@@ -82,13 +157,8 @@ def getTeamPerformance(team_id, gender="M", event_course="Y", rank_type="D", lim
         "rank_type": rank_type,
         "team_id": team_id,
     }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-    }
-
-    r = requests.get(url, params=params, headers=headers)
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    r = requests.get(url, params=params, headers=headers, timeout=30)
     r.raise_for_status()
     data = r.json()
     return data.get("results", [])
@@ -101,15 +171,11 @@ def getSwimmerProfileFastestTimes(swimmer_ID):
     Hits:
       https://www.swimcloud.com/api/swimmers/<ID>/profile_fastest_times/
 
-    Returns the raw JSON dict from SwimCloud. Use this when you want
-    'one row per event' best time (good for a quick performance snapshot).
+    Returns: list[dict]
     """
     url = f"{SWIMCLOUD_SWIMMER_API}/{swimmer_ID}/profile_fastest_times/"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-    }
-    r = requests.get(url, headers=headers)
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    r = requests.get(url, headers=headers, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -118,21 +184,14 @@ def getSwimmerTimesByEventJSON(swimmer_ID, event_token):
     """
     JSON API: all swims for a single event for this swimmer.
 
-    event_token is the *decoded* 'event=' query value from DevTools, e.g.:
-
-        '1|50|Y|1'
-
-    which corresponds to this URL:
-
-        https://www.swimcloud.com/api/swimmers/<ID>/times_by_event/?event=1%7C50%7CY%7C1
+    Example token: '1|50|Y|1'
+    URL:
+      https://www.swimcloud.com/api/swimmers/<ID>/times_by_event/?event=1%7C50%7CY%7C1
     """
     url = f"{SWIMCLOUD_SWIMMER_API}/{swimmer_ID}/times_by_event/"
-    params = {"event": event_token}  # requests will URL-encode the '|'
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-    }
-    r = requests.get(url, params=params, headers=headers)
+    params = {"event": event_token}  # requests will URL-encode '|'
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    r = requests.get(url, params=params, headers=headers, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -141,11 +200,11 @@ def swimmer_times_to_dataframe(times_json):
     """
     Best-effort converter from times_by_event JSON into a flat pandas DataFrame.
 
-    This assumes the JSON has a top-level list under either 'results' or 'times'.
-    If the schema is different, tweak this function after printing times_json.keys().
+    Looks for a list under:
+      - 'results' or
+      - 'times' or
+      - a single top-level list value
     """
-    import pandas as pd
-
     if isinstance(times_json, dict):
         if "results" in times_json and isinstance(times_json["results"], list):
             rows = times_json["results"]
@@ -168,19 +227,12 @@ def swimmer_times_to_dataframe(times_json):
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# TEAMS TABLE MANAGEMENT (collegeSwimmingTeams.csv)
-# ---------------------------------------------------------------------------
-
 def getSwimmerEventTokens(swimmer_ID):
     """
     Use profile_fastest_times JSON to infer which events this swimmer has.
 
-    Returns a list of dicts with:
-      - swimmer_id
-      - event_token  (for times_by_event API)
-      - event_label  (e.g. '50 Y Free')
-      - eventdistance, eventstroke, eventcourse, eventgender
+    Returns list of dicts:
+      swimmer_id, event_token, event_label, eventdistance, eventstroke, eventcourse, eventgender
     """
     fastest = getSwimmerProfileFastestTimes(swimmer_ID)
     tokens = []
@@ -203,18 +255,17 @@ def getSwimmerEventTokens(swimmer_ID):
 
     return tokens
 
+
 def getSwimmerAllTimes(swimmer_ID):
     """
     Fetch *all* swims for this swimmer across all events, using JSON APIs.
 
-    Returns a pandas DataFrame with one row per swim and simplified columns.
+    Returns a pandas DataFrame with one row per swim.
 
     Columns:
       swimmer_id, event_label, eventdistance, eventcourse, eventstroke_name,
       eventgender, eventtime, dateofswim, meet_name, season_id, heat, lane, place
     """
-    import pandas as pd
-
     event_tokens = getSwimmerEventTokens(swimmer_ID)
     all_rows = []
 
@@ -222,24 +273,27 @@ def getSwimmerAllTimes(swimmer_ID):
         token = et["event_token"]
         label = et["event_label"]
         try:
-            event_times = getSwimmerTimesByEventJSON(swimmer_ID, token)
+            event_times_json = getSwimmerTimesByEventJSON(swimmer_ID, token)
+            event_df = swimmer_times_to_dataframe(event_times_json)
         except Exception as e:
             print(f"[SwimScraper] Error fetching times for swimmer {swimmer_ID}, "
                   f"event {label} ({token}): {e}")
             continue
 
-        for rec in event_times:
-            # Choose sensible, stable fields; fall back where needed
+        if event_df.empty:
+            continue
+
+        # Iterate as dicts
+        for rec in event_df.to_dict("records"):
             distance = rec.get("eventdistance")
             course = rec.get("eventcourse")
             stroke_code = rec.get("eventstroke")
             stroke_name = _stroke_name(stroke_code)
             gender = rec.get("eventgender")
 
-            # time & date / meet fields (names inferred from fastest-times JSON)
             eventtime = rec.get("eventtime") or rec.get("time")
-            dateofswim = rec.get("dateofswim") or rec.get("date_created")
-            meet_name = rec.get("meet_name") or rec.get("name")
+            dateofswim = rec.get("dateofswim") or rec.get("date_created") or rec.get("date")
+            meet_name = rec.get("meet_name") or rec.get("meet") or rec.get("name")
             season_id = rec.get("season_id")
             heat = rec.get("heat")
             lane = rec.get("lane")
@@ -268,6 +322,7 @@ def getSwimmerAllTimes(swimmer_ID):
     df = df.sort_values(["swimmer_id", "event_label", "dateofswim"], na_position="last")
     return df
 
+
 def getSwimmerFastestTimesClean(swimmer_ID):
     """
     Return a simplified DataFrame of fastest times per event for this swimmer.
@@ -276,8 +331,6 @@ def getSwimmerFastestTimesClean(swimmer_ID):
       swimmer_id, event_label, eventdistance, eventcourse, eventstroke_name,
       eventgender, eventtime, dateofswim, meet_name, season_id
     """
-    import pandas as pd
-
     fastest = getSwimmerProfileFastestTimes(swimmer_ID)
     rows = []
     for rec in fastest:
@@ -304,19 +357,127 @@ def getSwimmerFastestTimesClean(swimmer_ID):
     return df
 
 
+# =============================================================================
+# PURE HTML SCRAPING: SWIMMER RANKINGS SCORE CARDS
+# =============================================================================
+
+def fetch_swimmer_rankings_html(session: requests.Session, swimmer_id: str) -> str:
+    url = f"{SWIMCLOUD_BASE}/swimmer/{swimmer_id}/rankings/"
+    _sleep_jitter()
+    r = session.get(url, timeout=30)
+    r.raise_for_status()
+
+    text = r.text
+    # Basic “blocked” detection
+    if "Cloudflare" in text and "Attention Required" in text:
+        raise RuntimeError("Blocked by Cloudflare on rankings page (try cookies or slower rate).")
+
+    return text
+
+
+def _parse_season_id_from_score_link(href: str) -> Optional[int]:
+    # href looks like: /swimmer/1283295/score/?season_id=29
+    try:
+        qs = parse_qs(urlparse(href).query)
+        sid = qs.get("season_id", [None])[0]
+        return int(sid) if sid is not None else None
+    except Exception:
+        return None
+
+
+def parse_rankings_season_cards(html: str, swimmer_id: str) -> pd.DataFrame:
+    """
+    Parse /swimmer/<id>/rankings/ HTML into a tidy table:
+      one row per season per context box (National / USA Club (Open) / USA College etc.)
+
+    Columns:
+      swimmer_id, season_label, season_id, context, score, rank_items_json
+    """
+    soup = bs(html, "html.parser")
+    out_rows: List[Dict[str, Any]] = []
+
+    # Each season is a big card
+    cards = soup.select("div.c-card.c-card--large")
+    for card in cards:
+        h2 = card.select_one("h2.c-title")
+        if not h2:
+            continue
+        season_label = h2.get_text(" ", strip=True).replace("Season", "").strip()
+
+        # Each score box within the season
+        for box in card.select("div.c-link-boxes"):
+            header = box.select_one("h3.c-link-boxes__header")
+            if not header:
+                continue
+
+            score_a = header.select_one("a[href*='/score/']")
+            score = None
+            season_id = None
+            if score_a:
+                score_text = score_a.get_text(strip=True)
+                try:
+                    score = float(score_text)
+                except Exception:
+                    score = None
+                season_id = _parse_season_id_from_score_link(score_a.get("href", ""))
+
+            # context label = header text minus the score number
+            header_text = header.get_text(" ", strip=True)
+            if score_a and score_a.get_text(strip=True):
+                header_text = header_text.replace(score_a.get_text(strip=True), "").strip()
+            context = re.sub(r"\s+", " ", header_text)
+
+            # optional: parse the rank rows inside the box
+            rank_items: List[Dict[str, Optional[str]]] = []
+            for item in box.select("a.c-link-boxes-item"):
+                org_name_el = item.select_one("h4.c-link-boxes-item__primary-text")
+                rank_el = item.select_one("span.c-link-boxes-item__number")
+                org_name = org_name_el.get_text(" ", strip=True) if org_name_el else None
+                org_rank = rank_el.get_text(" ", strip=True) if rank_el else None
+                if org_name or org_rank:
+                    rank_items.append({"org_name": org_name, "org_rank": org_rank})
+
+            out_rows.append({
+                "swimmer_id": str(swimmer_id),
+                "season_label": season_label,    # e.g. "2025-2026"
+                "season_id": season_id,          # e.g. 29
+                "context": context,              # e.g. "USA Club (Open)" / "National"
+                "score": score,                  # e.g. 961.50
+                "rank_items_json": rank_items,   # list[dict]
+            })
+
+    return pd.DataFrame(out_rows)
+
+
+def get_swimmer_rankings_scores(swimmer_id: str, session: Optional[requests.Session] = None) -> pd.DataFrame:
+    """
+    Convenience wrapper: fetch + parse rankings score cards.
+
+    Example:
+      session = build_swimcloud_session_from_env()
+      df = get_swimmer_rankings_scores("1283295", session=session)
+    """
+    if session is None:
+        session = build_swimcloud_session_from_env()
+    html = fetch_swimmer_rankings_html(session, swimmer_id)
+    return parse_rankings_season_cards(html, swimmer_id)
+
+
+# =============================================================================
+# TEAMS TABLE MANAGEMENT (collegeSwimmingTeams.csv)
+# =============================================================================
+
 def _default_teams_path():
     """Return default location of collegeSwimmingTeams.csv (next to this file)."""
     return Path(__file__).with_name("collegeSwimmingTeams.csv")
 
 
-import pandas as pd  # already there at the top
-
 def load_teams(path=None):
     """
     Load the college teams table from a CSV path or the default location.
 
-    If the file is missing, empty, or has no columns, return an empty
-    DataFrame with the expected columns instead of crashing.
+    If the file is missing, empty, or has no columns, return an empty DataFrame
+    with expected columns instead of crashing.
     """
     if path is None:
         path = _default_teams_path()
@@ -353,7 +514,6 @@ def load_teams(path=None):
     return df[expected_cols]
 
 
-
 # Global teams table used by a few helper functions
 teams = load_teams()
 
@@ -364,9 +524,9 @@ def set_teams_csv(path):
     teams = load_teams(path)
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # CONSTANTS / MAPPINGS
-# ---------------------------------------------------------------------------
+# =============================================================================
 
 events = {
     # yards
@@ -518,9 +678,10 @@ us_states = {
     "Wyoming": "WY",
 }
 
-# ---------------------------------------------------------------------------
+
+# =============================================================================
 # HELPER FUNCTIONS (string parsing, IDs, etc.)
-# ---------------------------------------------------------------------------
+# =============================================================================
 
 def cleanName(name: str) -> str:
     """
@@ -598,8 +759,8 @@ def getCity(hometown):
 
 
 def convertTime(display_time):
-    """Convert strings like 'M:SS.s' or 'SS.s' to total seconds (float).
-
+    """
+    Convert strings like 'M:SS.s' or 'SS.s' to total seconds (float).
     Returns None for non-numeric codes like DNS/DQ.
     """
     display_time = str(display_time).strip()
@@ -641,16 +802,15 @@ def getIndexes(data):
     }
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # "SURFACE" HTML SCRAPERS (lists: teams, rosters, HS recruits)
-# ---------------------------------------------------------------------------
+# =============================================================================
 
 def getCollegeTeams(team_names=["NONE"], conference_names=["NONE"], division_names=["NONE"]):
     """
     Return a list of teams matching given filters, using the local teams table.
 
-    This uses collegeSwimmingTeams.csv (loaded into `teams`) – it does NOT
-    hit SwimCloud directly. Use getTeamList.py to regenerate the CSV if needed.
+    Uses collegeSwimmingTeams.csv (loaded into `teams`) – does NOT hit SwimCloud directly.
     """
     team_df = pd.DataFrame()
     if team_names != ["NONE"]:
@@ -658,9 +818,7 @@ def getCollegeTeams(team_names=["NONE"], conference_names=["NONE"], division_nam
     elif division_names != ["NONE"]:
         team_df = teams[teams["team_division"].isin(division_names)].reset_index(drop=True)
     elif conference_names != ["NONE"]:
-        team_df = teams[teams["team_conference"].isin(conference_names)].reset_index(
-            drop=True
-        )
+        team_df = teams[teams["team_conference"].isin(conference_names)].reset_index(drop=True)
     else:
         team_df = teams
 
@@ -675,9 +833,7 @@ def getRoster(team, gender, team_ID=-1, season_ID=-1, year=-1, pro=False):
         swimmer_name, swimmer_ID, grade, hometown_state, hometown_city,
         team_name, team_ID, HS_power_index=None
 
-    We deliberately DO NOT call getPowerIndex() here to avoid one HTTP
-    request per swimmer. HSPowerIndex can later be filled from a JSON
-    swimmer endpoint.
+    We deliberately DO NOT call getPowerIndex() here to avoid one HTTP request per swimmer.
     """
     roster = []
 
@@ -713,6 +869,7 @@ def getRoster(team, gender, team_ID=-1, season_ID=-1, year=-1, pro=False):
             ),
             "Referer": "https://google.com/",
         },
+        timeout=30,
     )
     resp.encoding = "utf-8"
     soup = bs(resp.text, "html.parser")
@@ -721,9 +878,7 @@ def getRoster(team, gender, team_ID=-1, season_ID=-1, year=-1, pro=False):
         rows = (
             soup.find(
                 "table",
-                attrs={
-                    "class": "c-table-clean c-table-clean--middle table table-hover"
-                },
+                attrs={"class": "c-table-clean c-table-clean--middle table table-hover"},
             )
             .find_all("tr")[1:]
         )
@@ -741,13 +896,7 @@ def getRoster(team, gender, team_ID=-1, season_ID=-1, year=-1, pro=False):
         state = getState(hometown)
         city = getCity(hometown)
 
-        if not pro:
-            grade = cols[3].text.strip()
-        else:
-            grade = "None"
-
-        # IMPORTANT: no per-swimmer HTTP here; placeholder only.
-        HS_power_index = None
+        grade = cols[3].text.strip() if not pro else "None"
 
         roster.append(
             {
@@ -758,7 +907,7 @@ def getRoster(team, gender, team_ID=-1, season_ID=-1, year=-1, pro=False):
                 "grade": grade,
                 "hometown_state": state,
                 "hometown_city": city,
-                "HS_power_index": HS_power_index,
+                "HS_power_index": None,
             }
         )
 
@@ -806,7 +955,7 @@ def getHSRecruitRankings(
 
     for page in range(1, 5):
         page_url = f"{recruiting_url}?page={page}"
-        resp = requests.get(page_url, headers=headers)
+        resp = requests.get(page_url, headers=headers, timeout=30)
         if resp.status_code != 200:
             break
 
@@ -820,7 +969,6 @@ def getHSRecruitRankings(
             break
 
         for row in rows[1:]:
-            # swimmer name + ID
             name_link = row.find("a", href=lambda h: h and "/swimmer/" in h)
             if not name_link:
                 continue
@@ -828,7 +976,6 @@ def getHSRecruitRankings(
             href = name_link["href"].rstrip("/")
             swimmer_ID = href.split("/")[-1]
 
-            # hometown info
             hometown_state = hometown_city = None
             hometown_td = row.find("td", class_="u-color-mute")
             if hometown_td:
@@ -836,13 +983,11 @@ def getHSRecruitRankings(
                 hometown_state = getState(hometown_info)
                 hometown_city = getCity(hometown_info)
 
-            # HS power index (as shown in table)
             hs_power_index = None
             power_td = row.find("td", class_="u-text-end")
             if power_td:
                 hs_power_index = power_td.get_text(strip=True)
 
-            # committed college (if any)
             team_name = "None"
             team_ID = "None"
             team_link = row.find("a", href=lambda h: h and "/team/" in h)
@@ -874,18 +1019,15 @@ def getHSRecruitRankings(
     return recruits
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # LEGACY / HEAVY FUNCTIONS (HTML + Selenium)
-# ---------------------------------------------------------------------------
-# These are left mostly unchanged for backwards compatibility but are NOT
-# used in your new JSON+HTML pipeline. Use with caution for big jobs.
+# =============================================================================
 
 def getTeamRankingsList(gender, season_ID=-1, year=-1):
     """Legacy: scrape national team rankings with Selenium."""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     driver = webdriver.Chrome(options=chrome_options)
-    ignored_exceptions = (NoSuchElementException, StaleElementReferenceException)
 
     teams_out = []
 
@@ -939,8 +1081,7 @@ def getPowerIndex(swimmer_ID):
     The original implementation made multiple HTML requests per swimmer.
     For the new pipeline we avoid that; this function just returns None.
 
-    Once we have a swimmer JSON endpoint, we can implement this properly.
+    If we later find a stable JSON field or HTML location for power index,
+    implement it here.
     """
     return None
-
-

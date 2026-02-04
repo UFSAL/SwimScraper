@@ -8,12 +8,15 @@
 import re
 import time
 from typing import List, Dict, Optional
+from pathlib import Path
 
 import pandas as pd
 import requests
 
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
 BASE = "https://www.swimcloud.com"
-OUT_CSV = "recruits_2021_top100_M.csv"
+OUT_CSV = CSV_DIR / "recruits_2021_top100_M.csv"
 
 CLASS_YEAR = 2021
 GENDER = "M"
@@ -128,6 +131,7 @@ def main():
             break
 
     df = pd.DataFrame(all_rows).head(TARGET_N)
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT_CSV, index=False, encoding="utf-8")
     print(f"[OK] Wrote {len(df)} recruits to {OUT_CSV}")
 

@@ -17,13 +17,17 @@ import time
 import math
 import pandas as pd
 from sqlalchemy import create_engine
+from pathlib import Path
 
 import SwimScraper as ss  # uses your existing functions
 
 # ----------------------------
 # CONFIG
 # ----------------------------
-RECRUITS_CSV = "recruits_2021.csv"   # <-- you need this file like recruits_2028.csv
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
+
+RECRUITS_CSV = CSV_DIR / "recruits_2021.csv"   # <-- you need this file like recruits_2028.csv
 GENDER = "M"
 
 TOP_N = 100
@@ -41,8 +45,8 @@ RETRY_BACKOFF_SEC = 1.0
 SQL_URL = os.getenv("SQL_URL", "sqlite:///swim_progression.db")
 
 WRITE_CSV = True
-OUTDIR = "out"
-os.makedirs(OUTDIR, exist_ok=True)
+OUTDIR = CSV_DIR
+OUTDIR.mkdir(parents=True, exist_ok=True)
 
 
 # ----------------------------
@@ -283,7 +287,7 @@ def export_all(cohort: pd.DataFrame, panel: pd.DataFrame, best: pd.DataFrame, su
     summary.to_sql("swimmer_growth_summary_100y_free_2021_2025_M", engine, if_exists="replace", index=False)
 
     print(f"[OK] Exported tables to {SQL_URL}")
-    print(f"[OK] Also wrote CSVs to ./{OUTDIR}/")
+    print(f"[OK] Also wrote CSVs to {OUTDIR}")
 
 
 def main():

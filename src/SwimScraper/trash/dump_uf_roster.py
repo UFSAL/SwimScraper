@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import SwimScraper as ss
 
@@ -5,7 +7,10 @@ TEAM_ID = 117
 TEAM_NAME = "University of Florida"
 YEAR = 2025         
 GENDERS = ["M", "F"]
-OUT_CSV = "uf_roster_2024.csv"
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
+
+OUT_CSV = CSV_DIR / "uf_roster_2024.csv"
 
 
 def main():
@@ -25,6 +30,7 @@ def main():
         return
 
     df = pd.DataFrame(all_rows)
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT_CSV, index=False, encoding="utf-8")
     print(f"Wrote {len(df)} rows to {OUT_CSV}")
 

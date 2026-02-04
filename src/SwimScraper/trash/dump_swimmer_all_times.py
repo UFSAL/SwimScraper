@@ -9,8 +9,11 @@ from pathlib import Path
 import pandas as pd
 import SwimScraper as ss
 
-ROSTERS_CSV = Path(__file__).with_name("rosters.csv")
-OUT_CSV = Path(__file__).with_name("swimmer_all_times.csv")
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
+
+ROSTERS_CSV = CSV_DIR / "rosters.csv"
+OUT_CSV = CSV_DIR / "swimmer_all_times.csv"
 
 
 def load_swimmer_ids(path=ROSTERS_CSV):
@@ -52,6 +55,7 @@ def main():
         return
 
     out = pd.concat(all_dfs, ignore_index=True)
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUT_CSV, index=False, encoding="utf-8")
     print(f"[dump_swimmer_all_times] Wrote {len(out)} rows to {OUT_CSV}")
 

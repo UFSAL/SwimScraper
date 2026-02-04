@@ -20,10 +20,11 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
 
-INPUT_CSV = BASE_DIR / "recruits_2021_top100_M.csv"
-OUTPUT_CSV = BASE_DIR / "recruits_2021_M_times.csv"
+INPUT_CSV = CSV_DIR / "recruits_2021_top100_M.csv"
+OUTPUT_CSV = CSV_DIR / "recruits_2021_M_times.csv"
 
 BASE = "https://www.swimcloud.com"
 
@@ -177,8 +178,10 @@ def main():
         na_position="last",
     )
 
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
     print(f"[OK] Wrote {len(df)} rows to {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
+

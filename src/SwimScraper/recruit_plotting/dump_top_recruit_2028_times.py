@@ -14,7 +14,7 @@ import SwimScraper as ss
 BASE_DIR = Path(__file__).resolve().parents[3]
 CSV_DIR = BASE_DIR / "csv"
 
-RECRUITS_CSV = CSV_DIR / "recruits_2028.csv"
+RECRUITS_CSV = CSV_DIR / "recruits_2021.csv"
 OUT_CSV = CSV_DIR / "top_recruit_2028_all_times.csv"
 
 

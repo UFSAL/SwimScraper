@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 from typing import Union
 
+BASE_DIR = Path(__file__).resolve().parents[3]
+CSV_DIR = BASE_DIR / "csv"
+
 TEAM_PAGE_RANGE = 32  # number of pages under /team/?page=
 
 states = [
@@ -82,8 +85,10 @@ def getTeamList():
         time.sleep(0.05)
 
 
-def teamListToCSV(filename="collegeSwimmingTeams.csv"):
+def teamListToCSV(filename: Union[str, Path] = CSV_DIR / "collegeSwimmingTeams.csv"):
     """Write the global team_list to a CSV."""
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
     with open(filename, "w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(
@@ -118,7 +123,7 @@ def build_team_dataframe():
     return pd.DataFrame(team_list)
 
 
-def regenerate_teams_csv(path: Union[str, Path] = "collegeSwimmingTeams.csv") -> None:
+def regenerate_teams_csv(path: Union[str, Path] = CSV_DIR / "collegeSwimmingTeams.csv") -> None:
     """
     Scrape SwimCloud and write the college teams table to a CSV.
 
@@ -126,6 +131,7 @@ def regenerate_teams_csv(path: Union[str, Path] = "collegeSwimmingTeams.csv") ->
     """
     df = build_team_dataframe()
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False, encoding="utf-8")
     print(f"[getTeamList] Wrote {len(df)} teams to {path}")
 
